@@ -1,0 +1,284 @@
+{
+  "name": "My workflow 2",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        256
+      ],
+      "id": "4cb8345d-6402-4e33-a43c-e20065da0483",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "return Array.from({ length: 30 }, (_, i) => ({ json: { index: i+1  } }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        256
+      ],
+      "id": "9aee918e-87da-4105-9f5b-ef6ac5411433",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "url": "=http://192.168.11.187:8081/task/index/{{ $json.index }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -16,
+        256
+      ],
+      "id": "557915b9-2c65-4f56-aec3-fb050e42b4e8",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=#!/bin/bash\n\nREPO_DIR=\"/home/node/repos/repo_{{ $json.taskNumber }}\"\n\nGIT_CLONE_STRING=\"{{ $json.git_clone }}\"\nCLONE_PART=$(echo \"$GIT_CLONE_STRING\" | cut -d'&' -f1 | xargs)\nCHECKOUT_PART=$(echo \"$GIT_CLONE_STRING\" | awk -F'&&' '{print $NF}' | xargs)\n\nREPO_URL=$(echo \"$CLONE_PART\" | awk '{print $3}')\n\nif [ -d \"$REPO_DIR/.git\" ]; then\n  echo \"Repository $REPO_DIR existiert bereits – überspringe Clone und Checkout.\"\n  exit 0\nfi\n\necho \"Cloning repository $REPO_URL into $REPO_DIR...\"\n\nexport GIT_TERMINAL_PROMPT=0\n\nmkdir -p \"$REPO_DIR\"\ngit clone \"$REPO_URL\" \"$REPO_DIR\"\n\nif [[ \"$CHECKOUT_PART\" == git\\ checkout* ]]; then\n  COMMIT_HASH=$(echo \"$CHECKOUT_PART\" | awk '{print $3}')\n  echo \"Checking out commit: $COMMIT_HASH\"\n  cd \"$REPO_DIR\" || exit 1\n  git checkout \"$COMMIT_HASH\"\nfi\n"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        112,
+        256
+      ],
+      "id": "4f8e3a21-270e-4bb1-86d8-89d0ff494132",
+      "name": "Execute Command"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a team of agents with the following roles:\n- Planner: breaks down the problem into coding tasks\n- Coder: codes the changes to resolve the problem\n- Tester: runs the test suite and checks whether the bug is resolved\nWork in the directory: /home/node/repos/repo_{{ $('HTTP Request').item.json.taskNumber }}. This is a Git repository.\nYour goal is to fix the problem described below. Edit files to resolve the bug. All changes must appear in 'git diff'.\n\nProblem description:\n{{ $('HTTP Request').item.json.Problem_statement }}\nMake sure the fix is minimal and only touches what's necessary to resolve the failing tests. ",
+        "options": {
+          "maxIterations": 20
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        464
+      ],
+      "id": "704b6181-c52d-41c0-a99f-b9737fd82182",
+      "name": "AI Agent",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.11.187:8082/test",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"instance_id\": \"{{ $('HTTP Request').item.json.instance_id }}\",\n  \"repoDir\": \"/repos/repo_{{ $('HTTP Request').item.json.taskNumber }}\",\n  \"FAIL_TO_PASS\": {{ $('HTTP Request').item.json.FAIL_TO_PASS }},\n  \"PASS_TO_PASS\": {{ $('HTTP Request').item.json.PASS_TO_PASS }}\n} ",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        432,
+        464
+      ],
+      "id": "a776c345-bf97-465d-aa70-5b455a1bcca6",
+      "name": "HTTP Request1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=#!/bin/bash\n\nresponse_file=\"response.json\"\nLOG_FILE=\"/home/node/output/results.log\"\nindex={{ $('HTTP Request').item.json.taskNumber }}               \nstart_dir=$(pwd)\n\nresult_raw='{{ $json.harnessOutput }}'\n\nif [ -z \"$result_raw\" ] || [ \"$result_raw\" == \"null\" ]; then\n    echo \"No data in harnessOutput – possible evaluation error or empty result\" >> $\"LOG_FILE\"\n    exit 1\nfi\n\necho \"$result_raw\" > tmp_result.json\n\ninstance_id=$(jq -r 'keys[0]' tmp_result.json)\n\nfail_pass_passed=$(jq -r --arg id \"$instance_id\" '.[$id].tests_status.FAIL_TO_PASS.success | length' tmp_result.json)\nfail_pass_failed=$(jq -r --arg id \"$instance_id\" '.[$id].tests_status.FAIL_TO_PASS.failure | length' tmp_result.json)\nfail_pass_total=$((fail_pass_passed + fail_pass_failed))\n\npass_pass_passed=$(jq -r --arg id \"$instance_id\" '.[$id].tests_status.PASS_TO_PASS.success | length' tmp_result.json)\npass_pass_failed=$(jq -r --arg id \"$instance_id\" '.[$id].tests_status.PASS_TO_PASS.failure | length' tmp_result.json)\npass_pass_total=$((pass_pass_passed + pass_pass_failed))\n\n{\n    echo -e \"\\n--- TESTCASE $index ---\"\n    echo \"FAIL_TO_PASS passed: $fail_pass_passed/$fail_pass_total\"\n    echo \"PASS_TO_PASS passed: $pass_pass_passed/$pass_pass_total\"\n} >> \"$LOG_FILE\"\n\nrm tmp_result.json\n\necho \"Test case $index completed and logged.\"\n"
+      },
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        672,
+        464
+      ],
+      "id": "07305c5c-1779-43c9-b1e0-b1fd9633ad0f",
+      "name": "Execute Command1",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "executeOnce": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Execute_Once', ``, 'boolean') }}",
+        "command": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Command', ``, 'string') }}"
+      },
+      "type": "n8n-nodes-base.executeCommandTool",
+      "typeVersion": 1,
+      "position": [
+        48,
+        688
+      ],
+      "id": "88fd1ec7-b5e5-4e55-a7e8-5ef7e0114cb0",
+      "name": "Execute Command2",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        688
+      ],
+      "id": "0f504eae-a113-4cc6-aa4a-41f5993f14ca",
+      "name": "Ollama Chat Model1",
+      "credentials": {
+        "ollamaApi": {
+          "id": "KnsALz5V1GOgdvgL",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -384,
+        672
+      ],
+      "id": "72d745f3-bfad-43ec-850f-0d8bcd6949d5",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "HFupkAZ3bCJwsxp1",
+          "name": "OpenAi account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Execute Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Execute Command1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Command2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "084d2996-42ce-4140-98d8-1a41b766aa58",
+  "meta": {
+    "instanceId": "eea17ba32afe4e41ee58c91f15ea0fecf0ddd577070320285b373b0c38cf94a0"
+  },
+  "id": "jMGE4lHisJaCEkl0",
+  "tags": []
+}
